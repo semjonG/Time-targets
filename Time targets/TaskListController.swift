@@ -12,7 +12,17 @@ class TaskListController: UITableViewController {
 //    хранилище задач
     var tasksStorage: TasksStorageProtocol = TasksStorage()
 //    коллекция задач
-    var tasks: [TaskPriority: [TaskProtocol]] = [:]
+    var tasks: [TaskPriority: [TaskProtocol]] = [:] {
+        didSet {
+            for (tasksGroupPriority, tasksGroup) in tasks {
+                tasks[tasksGroupPriority] = tasksGroup.sorted{task1, task2 in
+                    let task1position = tasksStatusPosition.firstIndex(of: task1.status) ?? 0
+                    let task2position = tasksStatusPosition.firstIndex(of: task2.status) ?? 0
+                    return task1position < task2position
+    }
+    }
+    }
+    }
     
 //    поряддок отображения секций по типам
 //    индекс в массиве соответствует индексу секции в таблице
@@ -22,6 +32,8 @@ class TaskListController: UITableViewController {
         super.viewDidLoad()
 //        загрузка задач
         loadTasks()
+//        кнопка активации режима редактирования
+        navigationItem.leftBarButtonItem = editButtonItem
     }
     
     private func loadTasks() {
@@ -34,17 +46,8 @@ class TaskListController: UITableViewController {
         tasksStorage.loadTasks().forEach { task in
             tasks[task.type]?.append(task)
         }
-        
-//        сортировка списка задач
-        for (tasksGroupPriority, tasksGroup) in tasks {
-            tasks[tasksGroupPriority] = tasksGroup.sorted { task1, task2 in
-                let task1position = tasksStatusPosition.firstIndex(of: task1.status) ?? 0
-                let task2position = tasksStatusPosition.firstIndex(of: task2.status) ?? 0
-                return task1position < task2position
-            }
         }
-    }
-
+    
     // MARK: - Table view data source
 // количество секций в таблице
     override func numberOfSections(in tableView: UITableView) -> Int {
@@ -64,7 +67,10 @@ class TaskListController: UITableViewController {
 
 //    ячейка для строки таблицы
     override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
-        return getConfiguratedTaskCell_constraints(for: indexPath)
+//        ячейка на основе констрейнтов
+//        return getConfiguratedTaskCell_constraints(for: indexPath)
+//        ячейка на основе стека
+       return getConfiguredTaskCell_stack(for: indexPath)
     }
     
 //    ячейка на основе ограничений
@@ -125,50 +131,150 @@ class TaskListController: UITableViewController {
     
 //    порядок отображения задач по их статусу
     var tasksStatusPosition: [TaskStatus] = [.planned, .completed]
-
-    /*
-    // Override to support conditional editing of the table view.
-    override func tableView(_ tableView: UITableView, canEditRowAt indexPath: IndexPath) -> Bool {
-        // Return false if you do not want the specified item to be editable.
-        return true
+    
+//    ячейка на основе стека
+    private func getConfiguredTaskCell_stack(for indexPath: IndexPath) -> UITableViewCell {
+//        загружаем прототип ячейки по идентификатору
+        let cell = tableView.dequeueReusableCell(withIdentifier: "taskCellStack", for: indexPath) as! TaskCell
+//        получаем данные о задаче, которые необходимо вывести в ячейке
+        let taskType = sectionsTypesPosition[indexPath.section]
+        guard let currentTask = tasks[taskType]?[indexPath.row] else {
+            return cell
+        }
+        
+//        изменяем текст в ячейке
+        cell.title.text = currentTask.title
+//        изменяем символ в ячейке
+        cell.symbol.text = getSymbolForTask(with: currentTask.status)
+        
+//        изменяем цвет текста
+        if currentTask.status == .planned {
+            cell.title.textColor = .black
+            cell.symbol.textColor = .black
+        } else {
+            cell.title.textColor = .lightGray
+            cell.symbol.textColor = .lightGray
+        }
+        
+        return cell
     }
-    */
+    
+    override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
+//        1. проверяем существование задачи
+        let taskType = sectionsTypesPosition[indexPath.section]
+        guard let _ = tasks[taskType]?[indexPath.row] else {
+            return
+        }
+        
+//        2. убеждаемся, что задача не является выполненной
+        guard tasks[taskType]![indexPath.row].status == .planned else {
+//            снимаем выделение со строки
+            tableView.deselectRow(at: indexPath, animated: true)
+            return
+        }
+        
+//        3. отмечаем задачу как выполненную
+        tasks[taskType]![indexPath.row].status = .completed
+        
+//        4. перезагружаем секцию таблицы
+        tableView.reloadSections(IndexSet(arrayLiteral: indexPath.section), with: .automatic)
+    }
+    
+    override func tableView(_ tableView: UITableView, leadingSwipeActionsConfigurationForRowAt indexPath: IndexPath) -> UISwipeActionsConfiguration? {
+//        получаем данные о задаче, по которой осуществлен свайп
+        let taskType = sectionsTypesPosition[indexPath.section]
+        guard let _ = tasks[taskType]?[indexPath.row] else {
+            return nil
+        }
+        
+//        действие для изменения статуса на "запланирована"
+        let actionSwipeInstance = UIContextualAction(style: .normal, title: "Не выполнена") { _,_,_ in
+            self.tasks[taskType]![indexPath.row].status = .planned
+            self.tableView.reloadSections(IndexSet(arrayLiteral: indexPath.section), with: .automatic)
+        }
+        
+//        действие для перехода к экрану редактирования
+        let actionEditInstance = UIContextualAction(style: .normal, title: "Изменить") { _,_,_ in
+//            загрузка сцены из Сториборд
+            let editScreen = UIStoryboard(name: "Main", bundle: nil).instantiateViewController(identifier: "TaskEditController") as! TaskEditController
+//            передача значений редактируемой задачи
+            editScreen.taskText = self.tasks[taskType]![indexPath.row].title
+            editScreen.taskType = self.tasks[taskType]![indexPath.row].type
+            editScreen.taskStatus = self.tasks[taskType]![indexPath.row].status
 
-    /*
-    // Override to support editing the table view.
+//            передача обработчика для сохранения задачи
+            editScreen.doAfterEdit = {[self] title, type, status in
+                let editedTask = Task(title: title, type: type, status: status)
+                tasks[taskType]![indexPath.row] = editedTask
+                tableView.reloadData()
+            }
+            
+//            переход к экрану редактирования
+            self.navigationController?.pushViewController(editScreen, animated: true)
+            
+        }
+        
+//        изменяем цвет фона кнопки с действием
+        actionEditInstance.backgroundColor = .darkGray
+        
+//        создаем объект, описывающий доступные действия
+//        в зависимости от статуса задачи будет отображено 1 или 2 действия
+        let actionsConfiguration: UISwipeActionsConfiguration
+        if tasks[taskType]![indexPath.row].status == .completed {
+            actionsConfiguration = UISwipeActionsConfiguration(actions: [actionSwipeInstance, actionEditInstance])
+        } else {
+            actionsConfiguration = UISwipeActionsConfiguration(actions: [actionEditInstance])
+        }
+        return actionsConfiguration
+     
+    }
+    
+//    удаление задачи
     override func tableView(_ tableView: UITableView, commit editingStyle: UITableViewCell.EditingStyle, forRowAt indexPath: IndexPath) {
-        if editingStyle == .delete {
-            // Delete the row from the data source
-            tableView.deleteRows(at: [indexPath], with: .fade)
-        } else if editingStyle == .insert {
-            // Create a new instance of the appropriate class, insert it into the array, and add a new row to the table view
-        }    
+        let taskType = sectionsTypesPosition[indexPath.section]
+//        удаляем задачу
+        tasks[taskType]?.remove(at: indexPath.row)
+//        удаляем строку, соответствующую задаче
+        tableView.deleteRows(at: [indexPath], with: .automatic)
+        
     }
-    */
-
-    /*
-    // Override to support rearranging the table view.
-    override func tableView(_ tableView: UITableView, moveRowAt fromIndexPath: IndexPath, to: IndexPath) {
-
+    
+//    ручная сортировка списка задач
+    override func tableView(_ tableView: UITableView, moveRowAt sourceIndexPath: IndexPath, to destinationIndexPath: IndexPath) {
+//        секция, из которой происходит перемещение
+        let taskTypeFrom = sectionsTypesPosition[sourceIndexPath.section]
+//        секция, в которую проиходит перемещение
+        let taskTypeTo = sectionsTypesPosition[destinationIndexPath.section]
+        
+//        безопасно извлекаем задачу, тем самым копируем ее
+        guard let movedTask = tasks[taskTypeFrom]?[sourceIndexPath.row] else {
+            return
+        }
+        
+//        удаляем задачу с места, откуда она перенесена
+        tasks[taskTypeFrom]!.remove(at: sourceIndexPath.row)
+//        вставляем задачу на новую позицию
+        tasks[taskTypeTo]!.insert(movedTask, at: destinationIndexPath.row)
+//        если секция изменилась, изменяем тип задачи в соответствии с новой позицией
+        if taskTypeFrom != taskTypeTo {
+            tasks[taskTypeTo]![destinationIndexPath.row].type = taskTypeTo
+        }
+        
+//        обновляем данные
+        tableView.reloadData()
+        
     }
-    */
-
-    /*
-    // Override to support conditional rearranging of the table view.
-    override func tableView(_ tableView: UITableView, canMoveRowAt indexPath: IndexPath) -> Bool {
-        // Return false if you do not want the item to be re-orderable.
-        return true
-    }
-    */
-
-    /*
-    // MARK: - Navigation
-
-    // In a storyboard-based application, you will often want to do a little preparation before navigation
+    
     override func prepare(for segue: UIStoryboardSegue, sender: Any?) {
-        // Get the new view controller using segue.destination.
-        // Pass the selected object to the new view controller.
+        if segue.identifier == "toCreateScreen" {
+            let destination = segue.destination as! TaskEditController
+            destination.doAfterEdit = {[unowned self] title, type, status in
+                let newTask = Task(title: title, type: type, status: status)
+                tasks[type]?.append(newTask)
+                tableView.reloadData()
+            }
+        }
     }
-    */
+
 
 }
